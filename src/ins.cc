@@ -70,7 +70,7 @@ static TaskHandle_t task_handle;
 }
 
 void ins::init() {
-    xTaskCreate(task, "ins", 128, nullptr, 0, &task_handle);
+    xTaskCreate(task, "ins", 128, nullptr, osPriorityRealtime, &task_handle);
 }
 
 data_t *ins::data() {
