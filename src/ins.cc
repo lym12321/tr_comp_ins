@@ -65,6 +65,7 @@ static TaskHandle_t task_handle;
         _data.pitch *= M_PI / 180.f;
         _data.yaw *= M_PI / 180.f;
         _data.yaw_total_angle *= M_PI / 180.f;
+        memcpy(_data.q, QEKF_INS.q, sizeof _data.q);
         vTaskDelayUntil(&lst_wakeup_time, pdMS_TO_TICKS(1));
     }
 }

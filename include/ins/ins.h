@@ -9,6 +9,7 @@
 
 namespace ins {
     struct data_t {
+        float q[4];
         float roll, pitch, yaw;
         float yaw_total_angle;
         uint32_t timestamp;
