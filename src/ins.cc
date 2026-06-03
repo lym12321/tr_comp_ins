@@ -43,6 +43,7 @@ static TaskHandle_t task_handle;
         logger::info("loaded calibration data: [%f, %f, %f]", _cali_data.gyro_corr[0], _cali_data.gyro_corr[1], _cali_data.gyro_corr[2]);
     } else {
         logger::info("calibrating");
+        memset(&_cali_data, 0, sizeof _cali_data);
         uint32_t _lst_wakeup_time = bsp_time_get_ms();
         for (int i = 0; i < 5000; i++) {
             _data.raw = bsp_imu_read();
