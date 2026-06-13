@@ -26,6 +26,7 @@ namespace ins {
 }
 
 static TaskHandle_t task_handle;
+constexpr float g = 9.80665f;
 
 [[noreturn]] static void task(void *args) {
     IMU_QuaternionEKF_Init(10, 0.001, 10000000, 1, 0);
@@ -75,8 +76,9 @@ static TaskHandle_t task_handle;
         (_trans * t_gyro).save(_data.gyro);
         (_trans * t_accel).save(_data.accel);
 
-        IMU_QuaternionEKF_Update(_data.gyro[0], _data.gyro[1], _data.gyro[2], _data.accel[0], _data.accel[1], _data.accel[2], 0.001);
-        _data.roll = QEKF_INS.Roll, _data.pitch = QEKF_INS.Pitch, _data.yaw = QEKF_INS.Yaw, _data.yaw_total_angle = QEKF_INS.YawTotalAngle;
+        IMU_QuaternionEKF_Update(_data.gyro[0], _data.gyro[1], _data.gyro[2], _data.accel[0] * g, _data.accel[1] * g, _data.accel[2] * g, 0.001);
+        // 这里调换一下 pitch 和 roll, 因为玺佬的 pitch 是绕 x 轴的
+        _data.roll = QEKF_INS.Pitch, _data.pitch = QEKF_INS.Roll, _data.yaw = QEKF_INS.Yaw, _data.yaw_total_angle = QEKF_INS.YawTotalAngle;
         _data.roll *= M_PI / 180.f;
         _data.pitch *= M_PI / 180.f;
         _data.yaw *= M_PI / 180.f;
@@ -87,6 +89,7 @@ static TaskHandle_t task_handle;
 }
 
 void ins::init(const math::matrix<3, 3> &trans) {
+    if (inited) return;
     _trans = trans;
     const BaseType_t ok = xTaskCreate(task, "ins", 256, nullptr, osPriorityRealtime, &task_handle);
     BSP_ASSERT(ok == pdPASS);
