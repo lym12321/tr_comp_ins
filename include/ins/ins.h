@@ -4,13 +4,14 @@
 
 #pragma once
 
-#include <cstdint>
 #include <bsp/imu.h>
 #include <math/matrix.h>
+#include <math/quaternion.h>
 
 namespace ins {
     struct data_t {
-        float q[4], accel[3], gyro[3];
+        math::quaternion q;
+        math::matrix <3, 1> accel, gyro;
         float roll, pitch, yaw;
         float yaw_total_angle;
         bsp_imu_data_t raw;

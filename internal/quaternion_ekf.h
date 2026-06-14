@@ -29,8 +29,8 @@ typedef struct
     KalmanFilter_t IMU_QuaternionEKF;
     uint8_t ConvergeFlag;
     uint8_t StableFlag;
-    uint64_t ErrorCount;
-    uint64_t UpdateCount;
+    uint32_t ErrorCount;
+    uint32_t UpdateCount;
 
     float q[4];        // 四元数估计值
     float GyroBias[3]; // 陀螺仪零偏估计值
