@@ -133,6 +133,12 @@ uint16_t sizeof_float, sizeof_double;
 
 static void H_K_R_Adjustment(KalmanFilter_t *kf);
 
+static void *checked_malloc(size_t size)
+{
+    void *ptr = user_malloc(size == 0 ? 1 : size);
+    BSP_ASSERT(ptr != nullptr);
+    return ptr;
+}
 /**
  * @brief 初始化矩阵维度信息并为矩阵分配空间
  *
@@ -153,61 +159,61 @@ void Kalman_Filter_Init(KalmanFilter_t *kf, uint8_t xhatSize, uint8_t uSize, uin
     kf->MeasurementValidNum = 0;
 
     // measurement flags
-    kf->MeasurementMap = (uint8_t *)user_malloc(sizeof(uint8_t) * zSize);
+    kf->MeasurementMap = (uint8_t *)checked_malloc(sizeof(uint8_t) * zSize);
     memset(kf->MeasurementMap, 0, sizeof(uint8_t) * zSize);
-    kf->MeasurementDegree = (float *)user_malloc(sizeof_float * zSize);
+    kf->MeasurementDegree = (float *)checked_malloc(sizeof_float * zSize);
     memset(kf->MeasurementDegree, 0, sizeof_float * zSize);
-    kf->MatR_DiagonalElements = (float *)user_malloc(sizeof_float * zSize);
+    kf->MatR_DiagonalElements = (float *)checked_malloc(sizeof_float * zSize);
     memset(kf->MatR_DiagonalElements, 0, sizeof_float * zSize);
-    kf->StateMinVariance = (float *)user_malloc(sizeof_float * xhatSize);
+    kf->StateMinVariance = (float *)checked_malloc(sizeof_float * xhatSize);
     memset(kf->StateMinVariance, 0, sizeof_float * xhatSize);
-    kf->temp = (uint8_t *)user_malloc(sizeof(uint8_t) * zSize);
+    kf->temp = (uint8_t *)checked_malloc(sizeof(uint8_t) * zSize);
     memset(kf->temp, 0, sizeof(uint8_t) * zSize);
 
     // filter data
-    kf->FilteredValue = (float *)user_malloc(sizeof_float * xhatSize);
+    kf->FilteredValue = (float *)checked_malloc(sizeof_float * xhatSize);
     memset(kf->FilteredValue, 0, sizeof_float * xhatSize);
-    kf->MeasuredVector = (float *)user_malloc(sizeof_float * zSize);
+    kf->MeasuredVector = (float *)checked_malloc(sizeof_float * zSize);
     memset(kf->MeasuredVector, 0, sizeof_float * zSize);
-    kf->ControlVector = (float *)user_malloc(sizeof_float * uSize);
+    kf->ControlVector = (float *)checked_malloc(sizeof_float * uSize);
     memset(kf->ControlVector, 0, sizeof_float * uSize);
 
     // xhat x(k|k)
-    kf->xhat_data = (float *)user_malloc(sizeof_float * xhatSize);
+    kf->xhat_data = (float *)checked_malloc(sizeof_float * xhatSize);
     memset(kf->xhat_data, 0, sizeof_float * xhatSize);
     Matrix_Init(&kf->xhat, kf->xhatSize, 1, (float *)kf->xhat_data);
 
     // xhatminus x(k|k-1)
-    kf->xhatminus_data = (float *)user_malloc(sizeof_float * xhatSize);
+    kf->xhatminus_data = (float *)checked_malloc(sizeof_float * xhatSize);
     memset(kf->xhatminus_data, 0, sizeof_float * xhatSize);
     Matrix_Init(&kf->xhatminus, kf->xhatSize, 1, (float *)kf->xhatminus_data);
 
     if (uSize != 0)
     {
         // control vector u
-        kf->u_data = (float *)user_malloc(sizeof_float * uSize);
+        kf->u_data = (float *)checked_malloc(sizeof_float * uSize);
         memset(kf->u_data, 0, sizeof_float * uSize);
         Matrix_Init(&kf->u, kf->uSize, 1, (float *)kf->u_data);
     }
 
     // measurement vector z
-    kf->z_data = (float *)user_malloc(sizeof_float * zSize);
+    kf->z_data = (float *)checked_malloc(sizeof_float * zSize);
     memset(kf->z_data, 0, sizeof_float * zSize);
     Matrix_Init(&kf->z, kf->zSize, 1, (float *)kf->z_data);
 
     // covariance matrix P(k|k)
-    kf->P_data = (float *)user_malloc(sizeof_float * xhatSize * xhatSize);
+    kf->P_data = (float *)checked_malloc(sizeof_float * xhatSize * xhatSize);
     memset(kf->P_data, 0, sizeof_float * xhatSize * xhatSize);
     Matrix_Init(&kf->P, kf->xhatSize, kf->xhatSize, (float *)kf->P_data);
 
     // create covariance matrix P(k|k-1)
-    kf->Pminus_data = (float *)user_malloc(sizeof_float * xhatSize * xhatSize);
+    kf->Pminus_data = (float *)checked_malloc(sizeof_float * xhatSize * xhatSize);
     memset(kf->Pminus_data, 0, sizeof_float * xhatSize * xhatSize);
     Matrix_Init(&kf->Pminus, kf->xhatSize, kf->xhatSize, (float *)kf->Pminus_data);
 
     // state transition matrix F FT
-    kf->F_data = (float *)user_malloc(sizeof_float * xhatSize * xhatSize);
-    kf->FT_data = (float *)user_malloc(sizeof_float * xhatSize * xhatSize);
+    kf->F_data = (float *)checked_malloc(sizeof_float * xhatSize * xhatSize);
+    kf->FT_data = (float *)checked_malloc(sizeof_float * xhatSize * xhatSize);
     memset(kf->F_data, 0, sizeof_float * xhatSize * xhatSize);
     memset(kf->FT_data, 0, sizeof_float * xhatSize * xhatSize);
     Matrix_Init(&kf->F, kf->xhatSize, kf->xhatSize, (float *)kf->F_data);
@@ -216,39 +222,39 @@ void Kalman_Filter_Init(KalmanFilter_t *kf, uint8_t xhatSize, uint8_t uSize, uin
     if (uSize != 0)
     {
         // control matrix B
-        kf->B_data = (float *)user_malloc(sizeof_float * xhatSize * uSize);
+        kf->B_data = (float *)checked_malloc(sizeof_float * xhatSize * uSize);
         memset(kf->B_data, 0, sizeof_float * xhatSize * uSize);
         Matrix_Init(&kf->B, kf->xhatSize, kf->uSize, (float *)kf->B_data);
     }
 
     // measurement matrix H
-    kf->H_data = (float *)user_malloc(sizeof_float * zSize * xhatSize);
-    kf->HT_data = (float *)user_malloc(sizeof_float * xhatSize * zSize);
+    kf->H_data = (float *)checked_malloc(sizeof_float * zSize * xhatSize);
+    kf->HT_data = (float *)checked_malloc(sizeof_float * xhatSize * zSize);
     memset(kf->H_data, 0, sizeof_float * zSize * xhatSize);
     memset(kf->HT_data, 0, sizeof_float * xhatSize * zSize);
     Matrix_Init(&kf->H, kf->zSize, kf->xhatSize, (float *)kf->H_data);
     Matrix_Init(&kf->HT, kf->xhatSize, kf->zSize, (float *)kf->HT_data);
 
     // process noise covariance matrix Q
-    kf->Q_data = (float *)user_malloc(sizeof_float * xhatSize * xhatSize);
+    kf->Q_data = (float *)checked_malloc(sizeof_float * xhatSize * xhatSize);
     memset(kf->Q_data, 0, sizeof_float * xhatSize * xhatSize);
     Matrix_Init(&kf->Q, kf->xhatSize, kf->xhatSize, (float *)kf->Q_data);
 
     // measurement noise covariance matrix R
-    kf->R_data = (float *)user_malloc(sizeof_float * zSize * zSize);
+    kf->R_data = (float *)checked_malloc(sizeof_float * zSize * zSize);
     memset(kf->R_data, 0, sizeof_float * zSize * zSize);
     Matrix_Init(&kf->R, kf->zSize, kf->zSize, (float *)kf->R_data);
 
     // kalman gain K
-    kf->K_data = (float *)user_malloc(sizeof_float * xhatSize * zSize);
+    kf->K_data = (float *)checked_malloc(sizeof_float * xhatSize * zSize);
     memset(kf->K_data, 0, sizeof_float * xhatSize * zSize);
     Matrix_Init(&kf->K, kf->xhatSize, kf->zSize, (float *)kf->K_data);
 
-    kf->S_data = (float *)user_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
-    kf->temp_matrix_data = (float *)user_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
-    kf->temp_matrix_data1 = (float *)user_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
-    kf->temp_vector_data = (float *)user_malloc(sizeof_float * kf->xhatSize);
-    kf->temp_vector_data1 = (float *)user_malloc(sizeof_float * kf->xhatSize);
+    kf->S_data = (float *)checked_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
+    kf->temp_matrix_data = (float *)checked_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
+    kf->temp_matrix_data1 = (float *)checked_malloc(sizeof_float * kf->xhatSize * kf->xhatSize);
+    kf->temp_vector_data = (float *)checked_malloc(sizeof_float * kf->xhatSize);
+    kf->temp_vector_data1 = (float *)checked_malloc(sizeof_float * kf->xhatSize);
     Matrix_Init(&kf->S, kf->xhatSize, kf->xhatSize, (float *)kf->S_data);
     Matrix_Init(&kf->temp_matrix, kf->xhatSize, kf->xhatSize, (float *)kf->temp_matrix_data);
     Matrix_Init(&kf->temp_matrix1, kf->xhatSize, kf->xhatSize, (float *)kf->temp_matrix_data1);

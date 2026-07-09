@@ -5,6 +5,7 @@
 #include "bsp/time.h"
 #include "bsp/imu.h"
 #include "bsp/flash.h"
+#include "bsp/sys.h"
 #include "utils/logger.h"
 #include "utils/os.h"
 #include "utils/terminal.h"
@@ -106,7 +107,8 @@ static void register_terminal_command() {
                 return;
             }
             while (terminal::running()) {
-                terminal::info("[roll, pitch, yaw] = [%f, %f, %f]\r\n", _data.roll, _data.pitch, _data.yaw);
+                const auto current = snapshot();
+                terminal::info("[roll, pitch, yaw] = [%f, %f, %f]\r\n", current.roll, current.pitch, current.yaw);
                 os::task::sleep(1);
             }
             return;
@@ -142,21 +144,26 @@ static void register_terminal_command() {
     last_wakeup_time = bsp_time_get_ms();
 
     for (;;) {
-        _data.raw = bsp_imu_read();
-        _data.gyro.load(_data.raw.gyro);
-        _data.accel.load(_data.raw.accel);
-        _data.gyro = _trans * (_data.gyro - math::matrix<3, 1>(_cali_data.gyro_corr));
-        _data.accel = _trans * _data.accel;
+        data_t next;
+        next.raw = bsp_imu_read();
+        next.gyro.load(next.raw.gyro);
+        next.accel.load(next.raw.accel);
+        next.gyro = _trans * (next.gyro - math::matrix<3, 1>(_cali_data.gyro_corr));
+        next.accel = _trans * next.accel;
 
-        IMU_QuaternionEKF_Update(_data.gyro[0], _data.gyro[1], _data.gyro[2], _data.accel[0], _data.accel[1], _data.accel[2], 0.001);
+        IMU_QuaternionEKF_Update(next.gyro[0], next.gyro[1], next.gyro[2], next.accel[0], next.accel[1], next.accel[2], 0.001);
 
         // 这里调换一下 pitch 和 roll, 因为玺佬的 pitch 是绕 x 轴的
-        _data.roll = QEKF_INS.Pitch, _data.pitch = QEKF_INS.Roll, _data.yaw = QEKF_INS.Yaw, _data.yaw_total_angle = QEKF_INS.YawTotalAngle;
-        _data.roll *= deg_to_rad;
-        _data.pitch *= deg_to_rad;
-        _data.yaw *= deg_to_rad;
-        _data.yaw_total_angle *= deg_to_rad;
-        _data.q.load(QEKF_INS.q);
+        next.roll = QEKF_INS.Pitch, next.pitch = QEKF_INS.Roll, next.yaw = QEKF_INS.Yaw, next.yaw_total_angle = QEKF_INS.YawTotalAngle;
+        next.roll *= deg_to_rad;
+        next.pitch *= deg_to_rad;
+        next.yaw *= deg_to_rad;
+        next.yaw_total_angle *= deg_to_rad;
+        next.q.load(QEKF_INS.q);
+
+        const unsigned long state = bsp_sys_enter_critical();
+        _data = next;
+        bsp_sys_exit_critical(state);
 
         vTaskDelayUntil(&last_wakeup_time, pdMS_TO_TICKS(1));
     }
@@ -168,6 +175,17 @@ void ins::init(const math::matrix<3, 3> &trans) {
     _trans = trans;
     const BaseType_t ok = xTaskCreate(task, "ins", 256, nullptr, osPriorityRealtime, &task_handle);
     BSP_ASSERT(ok == pdPASS);
+}
+
+bool ins::ready() {
+    return inited;
+}
+
+data_t ins::snapshot() {
+    const unsigned long state = bsp_sys_enter_critical();
+    data_t copy = _data;
+    bsp_sys_exit_critical(state);
+    return copy;
 }
 
 data_t *ins::data() {
