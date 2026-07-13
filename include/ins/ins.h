@@ -16,9 +16,8 @@ namespace ins {
         float yaw_total_angle;
         bsp_imu_data_t raw;
     };
-    inline volatile bool inited = false;
     void init(const math::matrix<3, 3> &trans = math::matrix<3, 3>::eye());
     bool ready();
-    data_t snapshot();
+    data_t state();
     data_t *data();
 }

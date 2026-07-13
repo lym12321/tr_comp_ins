@@ -34,6 +34,7 @@ namespace ins {
     math::matrix<3, 3> _trans;
     data_t _data;
     static calibration_t _cali_data;
+    static bool inited = false;
 }
 
 static TaskHandle_t task_handle;
@@ -47,7 +48,8 @@ static bool run_calibration(const uint32_t duration_ms, bool save_to_flash = fal
 
     uint32_t wakeup_time = bsp_time_get_ms();
     for (uint32_t sample = 0; sample < duration_ms; sample++) {
-        const auto data = bsp_imu_read();
+        bsp_imu_data_t data;
+        if (bsp_imu_read(&data) != BSP_STATUS_OK) return false;
         for (int axis = 0; axis < 3; axis++) {
             candidate.gyro_corr[axis] += data.gyro[axis];
         }
@@ -89,7 +91,7 @@ static void register_terminal_command() {
         }
 
         if (args.size() == 2 && args[1] == "calibrate") {
-            if (!inited) {
+            if (!ready()) {
                 terminal::info("IMU is not ready.\r\n");
                 return;
             }
@@ -97,17 +99,17 @@ static void register_terminal_command() {
             terminal::info("Keep the robot stationary for 30 seconds...\r\n");
             terminal::info(request_calibration() ?
                 "Calibration saved.\r\n" :
-                "Calibration applied, but saving to flash failed.\r\n");
+                "Calibration failed; check IMU and flash.\r\n");
             return;
         }
 
         if (args.size() == 2 && args[1] == "watch") {
-            if (!inited) {
+            if (!ready()) {
                 terminal::info("IMU is not ready.\r\n");
                 return;
             }
             while (terminal::running()) {
-                const auto current = snapshot();
+                const auto current = state();
                 terminal::info("[roll, pitch, yaw] = [%f, %f, %f]\r\n", current.roll, current.pitch, current.yaw);
                 os::task::sleep(1);
             }
@@ -135,17 +137,25 @@ static void register_terminal_command() {
         logger::info("loaded calibration data: [%f, %f, %f]", _cali_data.gyro_corr[0], _cali_data.gyro_corr[1], _cali_data.gyro_corr[2]);
     } else {
         logger::warn("calibration data invalid, calibrating for 5 seconds");
-        run_calibration(default_calibration_ms);
+        while (!run_calibration(default_calibration_ms)) {
+            logger::error("IMU read failed during calibration, retrying");
+            os::task::sleep(100);
+        }
     }
 
+    const unsigned long state = bsp_sys_enter_critical();
     inited = true;
+    bsp_sys_exit_critical(state);
     logger::info("done");
 
     last_wakeup_time = bsp_time_get_ms();
 
     for (;;) {
         data_t next;
-        next.raw = bsp_imu_read();
+        if (bsp_imu_read(&next.raw) != BSP_STATUS_OK) {
+            vTaskDelayUntil(&last_wakeup_time, pdMS_TO_TICKS(1));
+            continue;
+        }
         next.gyro.load(next.raw.gyro);
         next.accel.load(next.raw.accel);
         next.gyro = _trans * (next.gyro - math::matrix<3, 1>(_cali_data.gyro_corr));
@@ -178,10 +188,13 @@ void ins::init(const math::matrix<3, 3> &trans) {
 }
 
 bool ins::ready() {
-    return inited;
+    const unsigned long state = bsp_sys_enter_critical();
+    const bool result = inited;
+    bsp_sys_exit_critical(state);
+    return result;
 }
 
-data_t ins::snapshot() {
+data_t ins::state() {
     const unsigned long state = bsp_sys_enter_critical();
     data_t copy = _data;
     bsp_sys_exit_critical(state);
