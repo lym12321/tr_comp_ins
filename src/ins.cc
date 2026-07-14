@@ -10,7 +10,8 @@
 #include "utils/os.h"
 #include "utils/terminal.h"
 
-#include "quaternion_ekf.h"
+#include <cstdint>
+#include "attitude_ekf.h"
 #include "utils/crc.h"
 
 using namespace ins;
@@ -41,7 +42,9 @@ static TaskHandle_t task_handle;
 static uint32_t last_wakeup_time;
 static constexpr uint32_t default_calibration_ms = 5000;
 static constexpr uint32_t active_calibration_ms = 30000;
-static constexpr float deg_to_rad = 0.01745329252f;
+static constexpr uint32_t initial_stable_ms = 500;
+
+static attitude_ekf ekf;
 
 static bool run_calibration(const uint32_t duration_ms, bool save_to_flash = false) {
     calibration_t candidate;
@@ -116,12 +119,12 @@ static void register_terminal_command() {
             return;
         }
 
-        terminal::info("Usage: imu [calibrate]\r\n");
+        terminal::info("Usage: imu [calibrate | watch]\r\n");
     }, "Show IMU status or calibrate gyro");
 }
 
 [[noreturn]] static void task(void *args) {
-    IMU_QuaternionEKF_Init(10, 0.001, 10000000, 1, 0);
+    ekf.init({});
     logger::info("module inited");
     const auto &trans = _trans;
     logger::info("transform matrix: [%f, %f, %f; %f, %f, %f; %f, %f, %f]",
@@ -143,11 +146,44 @@ static void register_terminal_command() {
         }
     }
 
-    const unsigned long state = bsp_sys_enter_critical();
+    logger::info("waiting for stationary...");
+    math::matrix<3, 1> accel_sum(0.0f);
+    uint32_t stable_samples = 0;
+    for (uint32_t wait = 0; ; ++wait) {
+        bsp_imu_data_t first;
+        if (bsp_imu_read(&first) != BSP_STATUS_OK) {
+            stable_samples = 0;
+            accel_sum = math::matrix<3, 1>(0.0f);
+            os::task::sleep(1);
+            continue;
+        }
+
+        math::matrix<3, 1> gyro, accel;
+        gyro.load(first.gyro);
+        accel.load(first.accel);
+        gyro = _trans * (gyro - math::matrix<3, 1>(_cali_data.gyro_corr));
+        accel = _trans * accel;
+
+        const float g2 = gyro[0]*gyro[0] + gyro[1]*gyro[1] + gyro[2]*gyro[2];
+        const float a2 = accel[0]*accel[0] + accel[1]*accel[1] + accel[2]*accel[2];
+
+        if (g2 < 0.09f && a2 > 86.49f && a2 < 106.09f) {
+            accel_sum += accel;
+            if (++stable_samples >= initial_stable_ms) {
+                ekf.init_attitude(accel_sum * (1.0f / static_cast<float>(stable_samples)));
+                logger::info("attitude initialized (waited %lu ms)", wait);
+                break;
+            }
+        } else {
+            stable_samples = 0;
+            accel_sum = math::matrix<3, 1>(0.0f);
+        }
+        os::task::sleep(1);
+    }
+
+    auto state = bsp_sys_enter_critical();
     inited = true;
     bsp_sys_exit_critical(state);
-    logger::info("done");
-
     last_wakeup_time = bsp_time_get_ms();
 
     for (;;) {
@@ -161,17 +197,16 @@ static void register_terminal_command() {
         next.gyro = _trans * (next.gyro - math::matrix<3, 1>(_cali_data.gyro_corr));
         next.accel = _trans * next.accel;
 
-        IMU_QuaternionEKF_Update(next.gyro[0], next.gyro[1], next.gyro[2], next.accel[0], next.accel[1], next.accel[2], 0.001);
+        ekf.update(next.gyro, next.accel, 0.001f, next.raw.temp);
 
-        // 这里调换一下 pitch 和 roll, 因为玺佬的 pitch 是绕 x 轴的
-        next.roll = QEKF_INS.Pitch, next.pitch = QEKF_INS.Roll, next.yaw = QEKF_INS.Yaw, next.yaw_total_angle = QEKF_INS.YawTotalAngle;
-        next.roll *= deg_to_rad;
-        next.pitch *= deg_to_rad;
-        next.yaw *= deg_to_rad;
-        next.yaw_total_angle *= deg_to_rad;
-        next.q.load(QEKF_INS.q);
-
-        const unsigned long state = bsp_sys_enter_critical();
+        // euler() 返回 [yaw, pitch, roll] (rad)，与原 QEKF_INS 的 Roll/Pitch 定义互换
+        const auto euler = ekf.euler();
+        next.roll = euler[2];
+        next.pitch = euler[1];
+        next.yaw = euler[0];
+        next.yaw_total_angle = ekf.yaw_total();
+        next.q = ekf.q();
+        state = bsp_sys_enter_critical();
         _data = next;
         bsp_sys_exit_critical(state);
 
@@ -183,12 +218,12 @@ void ins::init(const math::matrix<3, 3> &trans) {
     if (task_handle != nullptr) return;
     register_terminal_command();
     _trans = trans;
-    const BaseType_t ok = xTaskCreate(task, "ins", 256, nullptr, osPriorityRealtime, &task_handle);
+    const BaseType_t ok = xTaskCreate(task, "ins", 1024, nullptr, osPriorityRealtime, &task_handle);
     BSP_ASSERT(ok == pdPASS);
 }
 
 bool ins::ready() {
-    const unsigned long state = bsp_sys_enter_critical();
+    auto state = bsp_sys_enter_critical();
     const bool result = inited;
     bsp_sys_exit_critical(state);
     return result;

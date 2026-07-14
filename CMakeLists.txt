@@ -12,10 +12,10 @@ target_include_directories(ins
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal
 )
 
-target_compile_options(ins PRIVATE -Ofast -g0)
+target_compile_options(ins PRIVATE -Ofast)
 
 target_link_libraries(ins PUBLIC bsp m)
-target_link_libraries(ins PUBLIC components::utils components::math components::cmsis-dsp)
+target_link_libraries(ins PUBLIC components::utils components::math)
 
 set_target_properties(ins PROPERTIES
         C_STANDARD 17
