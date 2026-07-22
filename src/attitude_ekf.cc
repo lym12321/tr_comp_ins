@@ -31,15 +31,33 @@ void attitude_ekf::normalize(math::quaternion& q) {
     q = math::quaternion(q[0]*inv, q[1]*inv, q[2]*inv, q[3]*inv);
 }
 
-void attitude_ekf::build_F_gyro(const math::matrix<3, 1>& gyro, const float dt) {
-    const float a = 0.5f * gyro[0] * dt;
-    const float b = 0.5f * gyro[1] * dt;
-    const float c = 0.5f * gyro[2] * dt;
+math::quaternion attitude_ekf::rotation_delta(const math::matrix<3, 1>& gyro, const float dt) {
+    const float rate_square = gyro[0]*gyro[0] + gyro[1]*gyro[1] + gyro[2]*gyro[2];
+    const float rate = std::sqrt(rate_square);
+    const float half_angle = 0.5f * rate * dt;
+    const float scale = rate > 1e-6f ? std::sin(half_angle) / rate : 0.5f * dt;
+    return math::quaternion(
+        std::cos(half_angle), gyro[0] * scale, gyro[1] * scale, gyro[2] * scale
+    );
+}
 
-    _F(0, 0) = 1;   _F(0, 1) = -a;  _F(0, 2) = -b;  _F(0, 3) = -c;  _F(0, 4) = 0;  _F(0, 5) = 0;
-    _F(1, 0) = a;   _F(1, 1) = 1;   _F(1, 2) = c;   _F(1, 3) = -b;  _F(1, 4) = 0;  _F(1, 5) = 0;
-    _F(2, 0) = b;   _F(2, 1) = -c;  _F(2, 2) = 1;   _F(2, 3) = a;   _F(2, 4) = 0;  _F(2, 5) = 0;
-    _F(3, 0) = c;   _F(3, 1) = b;   _F(3, 2) = -a;  _F(3, 3) = 1;   _F(3, 4) = 0;  _F(3, 5) = 0;
+math::quaternion attitude_ekf::propagate(const math::quaternion& q,
+                                         const math::matrix<3, 1>& gyro,
+                                         const float dt) {
+    const auto delta = rotation_delta(gyro, dt);
+    auto result = q * delta;
+    normalize(result);
+    return result;
+}
+
+void attitude_ekf::build_F_gyro(const math::matrix<3, 1>& gyro, const float dt) {
+    const auto delta = rotation_delta(gyro, dt);
+    const float w = delta[0], x = delta[1], y = delta[2], z = delta[3];
+
+    _F(0, 0) = w;   _F(0, 1) = -x;  _F(0, 2) = -y;  _F(0, 3) = -z;  _F(0, 4) = 0;  _F(0, 5) = 0;
+    _F(1, 0) = x;   _F(1, 1) = w;   _F(1, 2) = z;   _F(1, 3) = -y;  _F(1, 4) = 0;  _F(1, 5) = 0;
+    _F(2, 0) = y;   _F(2, 1) = -z;  _F(2, 2) = w;   _F(2, 3) = x;   _F(2, 4) = 0;  _F(2, 5) = 0;
+    _F(3, 0) = z;   _F(3, 1) = y;   _F(3, 2) = -x;  _F(3, 3) = w;   _F(3, 4) = 0;  _F(3, 5) = 0;
     _F(4, 0) = 0;   _F(4, 1) = 0;   _F(4, 2) = 0;   _F(4, 3) = 0;   _F(4, 4) = 1;  _F(4, 5) = 0;
     _F(5, 0) = 0;   _F(5, 1) = 0;   _F(5, 2) = 0;   _F(5, 3) = 0;   _F(5, 4) = 0;  _F(5, 5) = 1;
 }
@@ -67,6 +85,7 @@ void attitude_ekf::reset_state() {
     _gyro_bias_lt = math::matrix<2, 1>(0.0f);
     _accel_lpf = math::matrix<3, 1>(0.0f);
     _gyro_lpf = math::matrix<3, 1>(0.0f);
+    _gyro_corr_prev = math::matrix<3, 1>(0.0f);
     for (int i = 0; i < 3; ++i)
         _notch_x1[i] = _notch_x2[i] = _notch_y1[i] = _notch_y2[i] = 0.0f;
 
@@ -78,14 +97,12 @@ void attitude_ekf::reset_state() {
 
     _converged = false;
     _stable = false;
-    _error_count = 0;
     _update_count = 0;
     _adaptive_gain = 1.0f;
-    _stable_hold = 0;
+    _stable_time = 0.0f;
     _bias_accum = math::matrix<3, 1>(0.0f);
-    _bias_accum_count = 0;
-    _stable_prev = false;
-    _converge_boost = 0;
+    _bias_accum_time = 0.0f;
+    _gyro_corr_prev_valid = false;
     _meas_skip_counter = 0;
     _yaw_total = 0.0f;
     _yaw_last = 0.0f;
@@ -100,7 +117,12 @@ void attitude_ekf::init(const config& cfg) {
     _acc_lpf_tau  = cfg.acc_lpf;
     _gyro_lpf_tau = cfg.gyro_lpf;
     _acc_fs_g         = cfg.acc_fs;
-    _bias_learn_rate  = cfg.bias_learn_rate;
+    _bias_learn_rate = std::fmax(0.0f, std::fmin(1.0f, cfg.bias_learn_rate));
+    _stationary_gyro_threshold = std::fmax(0.0f, cfg.stationary_gyro_threshold);
+    _stationary_accel_tolerance = std::fmax(0.0f, cfg.stationary_accel_tolerance);
+    _stationary_direction_threshold = std::fmax(0.0f, cfg.stationary_direction_threshold);
+    _stationary_confirm_time = std::fmax(0.1f, cfg.stationary_confirm_time);
+    _rotation_measurement_scale = std::fmax(0.0f, cfg.rotation_measurement_scale);
     _meas_rate_div    = cfg.meas_rate_div > 0 ? cfg.meas_rate_div : 1;
     _meas_skip_counter = 0;
     _temp_slope = cfg.temp_slope;
@@ -141,14 +163,13 @@ void attitude_ekf::init_attitude(const math::matrix<3, 1>& accel) {
 void attitude_ekf::update(const math::matrix<3, 1>& gyro,
                           const math::matrix<3, 1>& accel,
                           const float dt, const float temp) {
-    if (!_initialized) return;
+    if (!_initialized || !std::isfinite(dt) || dt <= 0.0f) return;
 
     const float state_n2 = _q[0]*_q[0] + _q[1]*_q[1] + _q[2]*_q[2] + _q[3]*_q[3]
                          + _gyro_bias[0]*_gyro_bias[0] + _gyro_bias[1]*_gyro_bias[1]
                          + _gyro_bias_lt[0]*_gyro_bias_lt[0] + _gyro_bias_lt[1]*_gyro_bias_lt[1];
     if (!(state_n2 > 1e-12f) || state_n2 > 4.0f) {
         reset_state();
-        _converge_boost = 200;
     }
     const float temp_bias = _temp_slope * (temp - _temp_ref);
 
@@ -174,15 +195,13 @@ void attitude_ekf::update(const math::matrix<3, 1>& gyro,
         gyro_notch[2] - temp_bias
     };
 
-    build_F_gyro(gyro_corr, dt);
+    const auto gyro_mid = _gyro_corr_prev_valid ? (gyro_corr + _gyro_corr_prev) * 0.5f : gyro_corr;
+    _gyro_corr_prev = gyro_corr;
+    _gyro_corr_prev_valid = true;
 
-    const auto x_cur = pack_state(_q, _gyro_bias);
-    const auto x_pred_raw = _F * x_cur;
-
-    math::quaternion q_pred;
-    math::matrix<2, 1> bias_pred;
-    unpack_state(q_pred, bias_pred, x_pred_raw);
-    normalize(q_pred);
+    build_F_gyro(gyro_mid, dt);
+    const auto q_pred = propagate(_q, gyro_mid, dt);
+    const auto bias_pred = _gyro_bias;
 
     build_F_quat(q_pred, dt);
 
@@ -214,108 +233,108 @@ void attitude_ekf::update(const math::matrix<3, 1>& gyro,
     const auto h_pred = predict_gravity(q_pred);
     auto z = h_pred;
     if (accel_valid) z = _accel_lpf * (1.0f / acc_n);
+    float direction_error_square = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        const float error = z[i] - h_pred[i];
+        direction_error_square += error * error;
+    }
 
-    _stable = accel_valid
-           && (gyro_corr[0]*gyro_corr[0] + gyro_corr[1]*gyro_corr[1] + gyro_corr[2]*gyro_corr[2] < 0.09f)
-           && (acc_n2 > 86.49f && acc_n2 < 106.09f);
+    const float gyro_motion_square = gyro_notch[0]*gyro_notch[0]
+                                   + gyro_notch[1]*gyro_notch[1]
+                                   + gyro_notch[2]*gyro_notch[2];
+    const float gyro_threshold_square = _stationary_gyro_threshold * _stationary_gyro_threshold;
+    const float raw_acc_n = raw_accel_valid ? std::sqrt(raw_acc_n2) : 0.0f;
+    const float stationary_direction_square =
+        _stationary_direction_threshold * _stationary_direction_threshold;
+    const bool stationary_candidate = accel_valid
+        && gyro_motion_square < gyro_threshold_square
+        && std::fabs(raw_acc_n - 9.80665f) < _stationary_accel_tolerance
+        && std::fabs(acc_n - 9.80665f) < _stationary_accel_tolerance
+        && direction_error_square < stationary_direction_square;
 
-    if (_stable && !_stable_prev) _converge_boost = 200;
-    _stable_prev = _stable;
+    _stable_time = stationary_candidate ? _stable_time + dt : 0.0f;
+    _stable = stationary_candidate && _stable_time >= _stationary_confirm_time;
 
     if (_stable) {
-        ++_stable_hold;
-        if (_stable_hold >= 500) {
-            _bias_accum[0] += gyro_corr[0];
-            _bias_accum[1] += gyro_corr[1];
-            ++_bias_accum_count;
-        }
+        _bias_accum[0] += gyro_corr[0] * dt;
+        _bias_accum[1] += gyro_corr[1] * dt;
+        _bias_accum_time += dt;
     } else {
-        _stable_hold = 0;
         _bias_accum = math::matrix<3, 1>(0.0f);
-        _bias_accum_count = 0;
+        _bias_accum_time = 0.0f;
     }
 
-    build_H(q_pred);
-    const auto innov = z - h_pred;
+    const bool measurement_due = _meas_skip_counter == 0;
+    if (++_meas_skip_counter >= _meas_rate_div) {
+        _meas_skip_counter = 0;
+    }
 
-    const float acc_dev = accel_valid ? std::fabs(acc_n - 9.80665f) : 9.80665f;
-    float r_scale = 1.0f + 10.0f * (acc_dev * acc_dev);
+    _q = q_pred;
+    _gyro_bias = bias_pred;
+    _cov = _cov_pred;
 
-    if (_converge_boost > 0) r_scale *= 0.001f;
+    if (accel_valid && measurement_due) {
+        build_H(q_pred);
+        const auto innov = z - h_pred;
 
-    if (!accel_valid) r_scale *= 1e6f;
+        const float acc_dev = std::fabs(acc_n - 9.80665f);
+        const float rotation_scale = _stable ? 1.0f
+            : 1.0f + _rotation_measurement_scale *
+                (gyro_mid[0]*gyro_mid[0] + gyro_mid[1]*gyro_mid[1] + gyro_mid[2]*gyro_mid[2]);
+        const float r_scale = (1.0f + 10.0f * acc_dev * acc_dev)
+            * (1.0f + 100.0f * direction_error_square) * rotation_scale;
 
-    auto innov_clamped = innov;
-    for (int i = 0; i < 3; ++i)
-        innov_clamped[i] = std::fmax(-0.5f, std::fmin(0.5f, innov[i]));
+        auto innov_clamped = innov;
+        for (int i = 0; i < 3; ++i)
+            innov_clamped[i] = std::fmax(-0.5f, std::fmin(0.5f, innov[i]));
 
-    _R = math::matrix<3, 3>(_meas_var * r_scale);
-    const auto S   = _H * _cov_pred * _H.T() + _R;
-    const auto invS = S.inv();
-    const auto invS_nu = invS * innov_clamped;
-    float chi_sq = 0.0f;
-    for (int i = 0; i < 3; ++i) chi_sq += innov_clamped[i] * invS_nu[i];
+        _R = math::matrix<3, 3>(_meas_var * r_scale);
+        const auto S = _H * _cov_pred * _H.T() + _R;
+        const auto invS = S.inv();
+        const auto invS_nu = invS * innov_clamped;
+        float chi_sq = 0.0f;
+        for (int i = 0; i < 3; ++i) chi_sq += innov_clamped[i] * invS_nu[i];
 
-    float chi_thr = _chi_threshold;
-    if (_converge_boost > 0) { chi_thr *= 1000.0f; --_converge_boost; }
+        const float chi_thr = _chi_threshold;
+        if (chi_sq < 0.5f * chi_thr) _converged = true;
 
-    if (accel_valid && chi_sq < 0.5f * chi_thr) _converged = true;
-
-    bool do_update = accel_valid;
-
-    if (!accel_valid) {
-        _q = q_pred;
-        _gyro_bias = bias_pred;
-    } else if (chi_sq > chi_thr && _converged) {
-        _stable ? ++_error_count : (_error_count = 0);
-
-        if (_error_count > 50) {
-            _converged = false;
-        } else {
-            _q = q_pred;
-            _gyro_bias = bias_pred;
+        bool do_update = true;
+        if (chi_sq > chi_thr && _converged) {
             do_update = false;
         }
-    } else if (!_stable && _meas_skip_counter != 0) {
-        _q = q_pred;
-        _gyro_bias = bias_pred;
-        do_update = false;
-    }
 
-    if (do_update) {
-        const float adaptive_gain = (chi_sq > 0.1f * chi_thr && _converged)
-            ? (chi_thr - chi_sq) / (0.9f * chi_thr)
-            : 1.0f;
-        _adaptive_gain = std::fmax(0.0f, std::fmin(1.0f, adaptive_gain));
-        _error_count = 0;
+        if (do_update) {
+            const float adaptive_gain = (chi_sq > 0.1f * chi_thr && _converged)
+                ? (chi_thr - chi_sq) / (0.9f * chi_thr)
+                : 1.0f;
+            _adaptive_gain = std::fmax(0.0f, std::fmin(1.0f, adaptive_gain));
 
-        auto K = _cov_pred * _H.T() * invS;
+            auto K = _cov_pred * _H.T() * invS;
+            float ori_cos[2];
+            for (int i = 0; i < 2; ++i)
+                ori_cos[i] = std::acos(std::fmin(1.0f, std::fabs(h_pred[i])));
 
-        float ori_cos[2];
-        for (int i = 0; i < 2; ++i)
-            ori_cos[i] = std::acos(std::fmin(1.0f, std::fabs(h_pred[i])));
-
-        for (int i = 0; i < 4; ++i)
-            for (int j = 0; j < 3; ++j)
-                K(i, j) *= _adaptive_gain;
-        for (int i = 4; i < 6; ++i)
-            for (int j = 0; j < 3; ++j)
-                K(i, j) *= _adaptive_gain * ori_cos[i - 4] / 1.5707963f;
-
-        auto dx = K * innov_clamped;
-        if (_converged) {
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 3; ++j)
+                    K(i, j) *= _adaptive_gain;
             for (int i = 4; i < 6; ++i)
-                dx[i] = std::fmax(-1e-2f * dt, std::fmin(1e-2f * dt, dx[i]));
+                for (int j = 0; j < 3; ++j)
+                    K(i, j) *= _adaptive_gain * ori_cos[i - 4] / 1.5707963f;
+
+            auto dx = K * innov_clamped;
+            if (_converged) {
+                for (int i = 4; i < 6; ++i)
+                    dx[i] = std::fmax(-1e-2f * dt, std::fmin(1e-2f * dt, dx[i]));
+            }
+            const auto x_new = pack_state(q_pred, bias_pred) + dx;
+            unpack_state(_q, _gyro_bias, x_new);
+            for (int i = 0; i < 2; ++i)
+                _gyro_bias[i] = std::fmax(-0.1f, std::fmin(0.1f, _gyro_bias[i]));
+            normalize(_q);
+            const auto identity = math::matrix<6, 6>::eye();
+            const auto correction = identity - K * _H;
+            _cov = correction * _cov_pred * correction.T() + K * _R * K.T();
         }
-        const auto x_new = x_pred_raw + dx;
-        unpack_state(_q, _gyro_bias, x_new);
-        // 绝对零偏限幅: ±0.1 rad/s
-        for (int i = 0; i < 2; ++i)
-            _gyro_bias[i] = std::fmax(-0.1f, std::fmin(0.1f, _gyro_bias[i]));
-        normalize(_q);
-        _cov = _cov_pred - K * _H * _cov_pred;
-    } else {
-        _cov = _cov_pred;
     }
 
     {
@@ -328,21 +347,14 @@ void attitude_ekf::update(const math::matrix<3, 1>& gyro,
         _yaw_last = yaw;
     }
 
-    // 静止 0.5s 后，每累积 1s 数据更新长期零偏
-    if (_bias_accum_count >= 1000) {
-        const float inv_n = 1.0f / static_cast<float>(_bias_accum_count);
-        const float avg_x = _bias_accum[0] * inv_n;
-        const float avg_y = _bias_accum[1] * inv_n;
-        _gyro_bias_lt[0] += _bias_learn_rate * avg_x;
-        _gyro_bias_lt[1] += _bias_learn_rate * avg_y;
+    if (_bias_accum_time >= 1.0f) {
+        const float inv_time = 1.0f / _bias_accum_time;
+        for (int i = 0; i < 2; ++i) {
+            _gyro_bias_lt[i] += _bias_learn_rate * _bias_accum[i] * inv_time;
+            _gyro_bias_lt[i] = std::fmax(-0.1f, std::fmin(0.1f, _gyro_bias_lt[i]));
+        }
         _bias_accum = math::matrix<3, 1>(0.0f);
-        _bias_accum_count = 0;
-    }
-
-    if (!_stable) {
-        if (++_meas_skip_counter >= _meas_rate_div) _meas_skip_counter = 0;
-    } else {
-        _meas_skip_counter = 0;
+        _bias_accum_time = 0.0f;
     }
 
     ++_update_count;
