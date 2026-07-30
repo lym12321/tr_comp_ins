@@ -181,6 +181,7 @@ static void register_terminal_command() {
         os::task::sleep(1);
     }
 
+
     auto state = bsp_sys_enter_critical();
     inited = true;
     bsp_sys_exit_critical(state);

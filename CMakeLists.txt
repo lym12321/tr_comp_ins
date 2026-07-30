@@ -12,7 +12,7 @@ target_include_directories(ins
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal
 )
 
-target_compile_options(ins PRIVATE -Ofast)
+target_compile_options(ins PRIVATE -O3)
 
 target_link_libraries(ins PUBLIC bsp m)
 target_link_libraries(ins PUBLIC components::utils components::math)
