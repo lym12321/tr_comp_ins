@@ -85,11 +85,17 @@ static bool run_startup_calibration(const uint32_t duration_ms) {
     return true;
 }
 
-static bool stationary(const bsp_imu_data_t &data) {
+static bool stationary(
+    const bsp_imu_data_t &data,
+    const std::array<float, 3> &gyro_corr
+) {
+    const float gyro_x = data.gyro[0] - gyro_corr[0];
+    const float gyro_y = data.gyro[1] - gyro_corr[1];
+    const float gyro_z = data.gyro[2] - gyro_corr[2];
     const float gyro_sq =
-        data.gyro[0] * data.gyro[0] +
-        data.gyro[1] * data.gyro[1] +
-        data.gyro[2] * data.gyro[2];
+        gyro_x * gyro_x +
+        gyro_y * gyro_y +
+        gyro_z * gyro_z;
     const float accel_sq =
         data.accel[0] * data.accel[0] +
         data.accel[1] * data.accel[1] +
@@ -232,6 +238,9 @@ static void register_terminal_command() {
     last_wakeup_time = bsp_time_get_ms();
 
     calibration_t calibration_candidate;
+    uint32_t calibration_started_ms = 0;
+    uint32_t calibration_elapsed_ms = 0;
+    uint32_t calibration_reported_ms = 0;
     uint32_t calibration_samples = 0;
     bool calibration_running = false;
 
@@ -247,6 +256,8 @@ static void register_terminal_command() {
 
         if (start_requested) {
             calibration_candidate = {};
+            calibration_elapsed_ms = 0;
+            calibration_reported_ms = 0;
             calibration_samples = 0;
             calibration_running = true;
             set_calibration_state(calibration_state_e::RUNNING, calibration_error_e::NONE, 0);
@@ -264,7 +275,7 @@ static void register_terminal_command() {
                 set_calibration_state(
                     calibration_state_e::FAILED,
                     calibration_error_e::IMU_READ,
-                    calibration_samples
+                    calibration_elapsed_ms
                 );
             }
             vTaskDelayUntil(&last_wakeup_time, pdMS_TO_TICKS(1));
@@ -272,9 +283,11 @@ static void register_terminal_command() {
         }
 
         if (calibration_running) {
-            if (!stationary(next.raw)) {
+            if (!stationary(next.raw, _cali_data.gyro_corr)) {
                 if (calibration_samples != 0) {
                     calibration_candidate = {};
+                    calibration_elapsed_ms = 0;
+                    calibration_reported_ms = 0;
                     calibration_samples = 0;
                     set_calibration_state(
                         calibration_state_e::RUNNING,
@@ -283,22 +296,17 @@ static void register_terminal_command() {
                     );
                 }
             } else {
+                const uint32_t now = bsp_time_get_ms();
+                if (calibration_samples == 0) calibration_started_ms = now;
                 for (int axis = 0; axis < 3; axis++) {
                     calibration_candidate.gyro_corr[axis] += next.raw.gyro[axis];
                 }
                 calibration_samples++;
-                if (calibration_samples % 10 == 0 ||
-                    calibration_samples == calibration_duration_ms) {
-                    set_calibration_state(
-                        calibration_state_e::RUNNING,
-                        calibration_error_e::NONE,
-                        calibration_samples
-                    );
-                }
+                calibration_elapsed_ms = now - calibration_started_ms;
 
-                if (calibration_samples == calibration_duration_ms) {
+                if (calibration_elapsed_ms >= calibration_duration_ms) {
                     for (float &correction : calibration_candidate.gyro_corr) {
-                        correction /= static_cast<float>(calibration_duration_ms);
+                        correction /= static_cast<float>(calibration_samples);
                     }
                     calibration_candidate.crc = calibration_candidate.calc_crc();
                     set_calibration_state(
@@ -311,10 +319,8 @@ static void register_terminal_command() {
                             "ins/cali", &calibration_candidate,
                             sizeof calibration_candidate
                         ) == BSP_STATUS_OK) {
-                        state = bsp_sys_enter_critical();
                         _cali_data = calibration_candidate;
                         calibration_persisted = true;
-                        bsp_sys_exit_critical(state);
 
                         math::matrix<3, 1> attitude_accel;
                         attitude_accel.load(next.raw.accel);
@@ -335,6 +341,13 @@ static void register_terminal_command() {
                     }
                     calibration_running = false;
                     last_wakeup_time = bsp_time_get_ms();
+                } else if (calibration_elapsed_ms - calibration_reported_ms >= 10) {
+                    calibration_reported_ms = calibration_elapsed_ms;
+                    set_calibration_state(
+                        calibration_state_e::RUNNING,
+                        calibration_error_e::NONE,
+                        calibration_elapsed_ms
+                    );
                 }
             }
         }
