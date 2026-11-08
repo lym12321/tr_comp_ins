@@ -3,6 +3,8 @@
 #include "math/matrix.h"
 #include "math/quaternion.h"
 
+#include <cstdint>
+
 namespace ins {
 
 class attitude_ekf {
